@@ -1,0 +1,262 @@
+#pragma once
+#include <iostream>
+//#include "GolfBall.h"
+//#include "Ground.h"
+#include "Renderer.h"
+#include"StartScene.h"
+#include"ModeSelectScene.h"
+#include"StageSelectScene.h"
+#include "TitleScene.h"
+#include "Stage1Scene.h"
+#include "GameOverScene.h"
+#include "Stage0.h"
+#include "Stage1.h"
+#include "Stage2.h"
+#include "Stage3.h"
+#include "Stage4.h"
+#include "Stage5.h"
+#include "Stage6.h"
+#include "Stage7.h"
+#include "Stage8.h"
+#include "Stage9.h"
+#include "Stage10.h"
+#include <array>
+
+enum class SceneName {
+	START,
+	TITLE,
+	STAGE0,
+	MODE_SELECT,
+	STAGE_SELECT,
+	STAGE1,
+	STAGE2,
+	STAGE3,
+	STAGE4,
+	STAGE5,
+	STAGE6,
+	STAGE7,
+	STAGE8,
+	STAGE9,
+	STAGE10,
+	GAMEOVER
+};
+
+//再プレイ用
+enum class StageStartMode
+{
+	StartTalk,  // 会話から
+	Gameplay,   // 会話スキップでゲームから
+};
+
+class Game
+{
+private:
+
+	// シーン管理
+	static Game* m_Instance;
+	Scene* m_Scene;
+
+	SceneName m_OldScene;
+	SceneName m_CurrentScene;
+	SceneName m_Scenebg;
+
+	// カメラ
+	Camera  m_Camera;
+
+	//サウンド
+	static Sound m_Sound;
+
+	// デバッグ用衝突判定描画	
+
+	// テストオブジェクト
+	//GolfBall m_Ball;
+
+	//Objects
+	std::vector<std::unique_ptr<Object>> m_Objects;
+
+	//追加
+	// 生成キュー
+	std::vector<std::unique_ptr<Object>> m_SpawnQueue;
+	//削除キュー
+	std::vector<Object*> m_DeleteQueue;
+	// オブジェクト更新中フラグ
+	bool m_IsUpdatingObjects = false;
+
+	int m_MaxClearedStage = 0; // どこまでクリアしたかを保存
+
+	//ステージ1~9のクリアフラグ
+	bool Stage1ClearFlag = false;
+	bool Stage2ClearFlag = false;
+	bool Stage3ClearFlag = false;
+	bool Stage4ClearFlag = false;
+	bool Stage5ClearFlag = false;
+	bool Stage6ClearFlag = false;
+	bool Stage7ClearFlag = false;
+	bool Stage8ClearFlag = false;
+	bool Stage9ClearFlag = false;
+
+	//全ステージをクリアしたかのフラグ
+	bool AllStageClearFlag = false;
+
+	// ステージごとの次回開始モード
+	std::array<StageStartMode, 11> m_NextStageStartMode{};
+
+	//ゲームの勝敗判定中に、手や敵のUpdateをブロックする
+	bool m_WorldStopped = false;
+
+	//クリア用フラグ
+	//タイトルを押したときにfalse(未クリア)ならチュートリアルへ
+	//true(クリア済み)ならセレクトへ
+	bool IsTutorialDone = false;
+
+public:
+	Game(); // コンストラクタ
+	~Game(); // デストラクタ
+
+	static void Init(); // 初期化
+	static void Update(); // 更新
+	static void Draw(); // 描画
+	static void Uninit(); // 終了処理
+
+	static Game* GetInstance();
+
+	//チュートリアルはプレイした？//セッター
+	bool IsTutorialPlay() { return IsTutorialDone; }
+	void SetTutorialPlay(bool done) { IsTutorialDone = done; }
+
+	//再プレイ用の関数
+	// 次回の開始モードをセット
+	void SetNextStageStartMode(int stageNo, StageStartMode mode);
+
+	// 次回の開始モードを取得
+	StageStartMode ConsumeNextStageStartMode(int stageNo);
+
+	//Camera* GetCamera() { return &m_Instance->m_Camera; }
+	Camera* GetCamera() { return &m_Camera; }
+	Scene* GetScene() { return m_Instance->m_Scene; }
+
+	void ChangeScene(SceneName sceneName); // シーン変更
+	void ChangeOldScene();	//前のシーンに戻る
+	SceneName GetScenebg() { return m_Scenebg; }
+
+	void DeleteObject(Object* ptr); // オブジェクト削除
+	void DeleteAllObjects(); // オブジェクト全削除
+
+	//追加
+	//Spawnキューを反映
+	void FlushSpawnQueue();
+	//deleteキューを反映
+	void ApplyDeleteQueue();
+
+	// 勝敗確定でゲーム内の動きを止める
+	static void SetWorldStopped(bool v) { m_Instance->m_WorldStopped = v; }
+	//static bool IsWorldStopped() {return m_Instance->m_WorldStopped;}
+
+	//サウンドを取得
+	static Sound* GetSound() { return &m_Sound; }
+
+	//ステージクリアフラグのセッターとゲッター
+	void SetStageClearFlag(int stageNum);
+	//全ステージをクリアしたときにtrueを返す
+	bool GetAllStageClearFlag();
+	
+	template <typename T, typename... Args>
+	T* AddObject(Args&&... args)
+	{
+		// T(args...) でオブジェクトを生成
+		auto ptr = std::make_unique<T>(std::forward<Args>(args)...);
+
+		T* rawPtr = ptr.get();								// 生ポインタを退避
+
+		// Update中は「登録＋Init」を後回し（＝Flushでやる）
+		if (m_Instance->m_IsUpdatingObjects)
+		{
+			m_Instance->m_SpawnQueue.emplace_back(std::move(ptr));
+			return rawPtr; // ※この時点ではまだInitされてない
+		}
+
+		m_Instance->m_Objects.emplace_back(std::move(ptr)); // vector に格納
+		rawPtr->Init();										// 初期化
+		return rawPtr;
+	}
+
+	// オブジェクトを追加する（※テンプレート関数）// 引数なしバージョン
+	/*
+	template <typename T>
+	T* AddObject()
+	{
+		T* ptr = new T;
+		m_Instance->m_Objects.emplace_back(ptr);
+		ptr->Init();
+		return ptr;
+	}
+	//オブジェクトを取得する（※テンプレート関数）
+	template<typename T>
+	std::vector<T*> GetObjects()
+	{
+		std::vector<T*> result;
+		for (auto& obj : m_Instance->m_Objects)
+		{
+			//dynamic_castで型変換をcheck
+			if (T* deriveObj = dynamic_cast<T*>(obj.get())) {
+				result.emplace_back(deriveObj);
+			}
+		}
+		return result;
+	}
+
+	*/
+
+	// オブジェクトを追加する（※テンプレート関数）
+	// 任意個数の引数 Args... を取り、そのまま T のコンストラクタに渡す
+	/*template <typename T, typename... Args>
+	T* AddObject(Args&&... args)
+	{
+		// T(args...) でオブジェクトを生成
+		auto ptr = std::make_unique<T>(std::forward<Args>(args)...);
+
+		T* rawPtr = ptr.get();								// 生ポインタを退避
+		m_Instance->m_Objects.emplace_back(std::move(ptr)); // vector に格納
+		rawPtr->Init();										// 初期化
+		return rawPtr;
+	}*/
+
+	// オブジェクトを取得する（※テンプレート関数）
+	template<typename T>
+	std::vector<T*> GetObjects()
+	{
+		std::vector<T*> result;
+		for (auto& obj : m_Instance->m_Objects)
+		{
+			// dynamic_castで型変換をcheck
+			if (T* deriveObj = dynamic_cast<T*>(obj.get())) {
+				result.emplace_back(deriveObj);
+			}
+		}
+		return result;
+	}
+
+	//オブジェクトの位置を取得
+	template<typename T>
+	std::vector<DirectX::SimpleMath::Vector3> GetPositions()
+	{
+		std::vector<DirectX::SimpleMath::Vector3> result;
+		for (auto& obj : m_Objects)
+		{
+			if (T* d = dynamic_cast<T*>(obj.get()))
+				result.emplace_back(d->GetPosition());
+		}
+		return result;
+	}
+
+	void SetMaxClearedStage(int stageNum)
+	{
+		// 今の記録より大きい数字（先のステージ）なら更新
+		if (stageNum > m_MaxClearedStage)
+		{
+			m_MaxClearedStage = stageNum;
+		}
+	}
+	int GetMaxClearedStage() { return m_MaxClearedStage; }
+
+};

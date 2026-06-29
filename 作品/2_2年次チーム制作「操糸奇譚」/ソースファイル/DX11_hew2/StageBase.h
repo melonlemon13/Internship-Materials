@@ -1,0 +1,152 @@
+#pragma once
+#include "Scene.h"
+#include "Object.h"
+#include "Input.h"
+#include "Collision.h"
+#include "TriangleSilk.h"
+
+#include "Texture2D.h"
+#include "TitleBG.h"
+#include "silkWall.h"
+#include "playerHand.h"
+#include "Field.h"
+#include "Shrinemaiden.h"
+#include "EnemyBase.h"
+#include "Enemy1.h"	
+#include "Enemy2.h"
+#include "Enemy3.h"
+#include "Enemy4.h"
+#include "EnemyMayu.h"
+#include "EnemyType.h"
+#include "Hashira.h"
+#include <random>
+#include "UI_redSilk.h"
+#include "UI_mikoHp.h"
+#include"UI_control.h"
+
+#include <vector>
+#include "MessageManager.h"
+#include "MessagePage.h"
+
+// StageBaseクラス
+class StageBase : public Scene
+{
+protected:
+	// 会話の進行状態
+	enum class Flow { StartTalk, Gameplay, EndTalk };
+
+	std::vector<Object*> m_MySceneObjects; // このシーンのオブジェクト
+
+	MessageManager* m_Message = nullptr;  // AddObjectで生成したものを保持
+	std::vector<MessagePage> m_Pages;
+	
+	Flow m_Flow = Flow::StartTalk;
+
+	Field* m_Field = nullptr;      // フィールド（境界判定用）
+
+	UI_redSilk* m_UI_redSilk;    // UI用の赤い糸表示
+	UI_mikoHp* m_UI_mikoHp;    // UI用のHP
+
+	silkWall* m_SilkWalls[3]{};   // 糸の壁 最大3本
+	Enemy1* Enemy1List[100]{};  // テスト用に100体
+	Enemy2* Enemy2List[100]{};  // テスト用に100体
+	Enemy3* Enemy3List[100]{};  // テスト用に100体
+	Enemy4* Enemy4List[100]{};  // テスト用に100体
+	Hashira* hashiras[10]{};  // テスト用に10体
+	playerHand* m_HandL = nullptr; // 左手
+	playerHand* m_HandR = nullptr; // 右手
+	int         m_NextSilkIndex = 0; // 次に使う糸
+
+	Shrinemaiden* m_Miko = nullptr;     // 巫女
+
+	UI_control* m_UI_control; //コントローラーUI
+
+	int StagekillCount = 0;	//倒した敵の数
+	int StageEnemyCount = 0; //ステージの敵の総数
+
+	Texture2D* ClearImage[3] = {};
+	Texture2D* GameOverImage[3] = {};
+	Texture2D* ScoreImage[6] = {};
+	Texture2D* SurvivalTimeImage[5] = {};
+
+	int m_SilkCount = 0;
+
+	bool m_ClearFlg = false;//クリアできたかどうか
+	bool m_ClearImageFlg = false;//クリア画像用
+	bool m_ClearChangeImageFlg = false;//クリアできたかどうか
+	bool m_GameOverFlg = false;//失敗したかどうか
+	bool m_GameOverImageFlg = false;//失敗画像用
+	int m_ChangeClearCount = 60;//クリア演出用の時間
+	bool m_GameUpdateBlock = false;
+
+	bool ResultVoice_flg = false;//勝敗ボイス再生用
+
+	//勝利、敗北時にセレクトへなどを選択するための変数
+	int m_SelectIndex = 0;
+
+	//経過したフレーム数
+	int elapsedFrames = 0;
+	//経過した秒数
+	int elapsedSeconds = 0;
+
+	//敵がスポーンするかどうかのフラグ
+	bool EnemySpawnFlag = false;
+
+	//スコア
+	int Score = 0;
+	//敵を倒したときの基礎スコア
+	const int baseScore = 100;
+	//スコア倍率、1度に敵を多く倒すほど倍率が上がる
+	float ScoreMultiplier = 0.9f;
+	//生存時間
+	int survivalTime = 0;
+
+	//ランダム
+	float rand = 0.0f;
+	
+public:
+	StageBase() {};  // コンストラクタ
+	~StageBase() {}; // デストラクタ
+
+	virtual void Init() = 0; // 初期化
+	virtual void Uninit() = 0; // 終了処理
+	virtual void Update() = 0; // 更新
+
+	virtual void MessageUpdate() = 0;	//会話パート更新
+	virtual void GameUpdate() = 0;		//ゲームパート更新
+
+	virtual void BuildStartPages() = 0;
+	virtual void BuildEndPages() = 0;
+
+	virtual void UpdateEnemySpawn() = 0;
+	void EnemySpawn(EnemyType enemyType,DirectX::SimpleMath::Vector3 pos);
+	virtual void StageClearCheck() = 0;
+	virtual void StageFailedCheck() = 0;
+
+	virtual void SoundUpdate() = 0;
+
+	void AddStagekillCount() { ++StagekillCount ;};
+
+	/*
+	uint64_t get_rand_range(uint64_t min_val, uint64_t max_val)
+	{
+		// 確実に min_val <= max_val にする
+		if (min_val > max_val) std::swap(min_val, max_val);
+
+		// 乱数生成エンジン（初期化は一度だけ）
+		static std::mt19937_64 mt64{ 0 };
+
+		// 一様分布生成器
+		std::uniform_int_distribution<uint64_t> dist(min_val, max_val);
+
+		return dist(mt64);
+	}
+	*/
+
+	int get_rand_range(int min, int max)
+	{
+		static std::mt19937 rng{ std::random_device{}() };
+		std::uniform_int_distribution<int> dist(min, max);
+		return dist(rng);
+	}
+};

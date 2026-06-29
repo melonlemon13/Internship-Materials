@@ -1,0 +1,1442 @@
+#include "Stage7.h"
+#include "Game.h"
+
+void Stage7::Init()
+{
+	const int kStageNo = 7;
+	// 次回開始モードを取得
+	StageStartMode startMode = Game::GetInstance()->ConsumeNextStageStartMode(kStageNo);
+
+	// 司令塔をObjectとして追加
+	m_Message = Game::GetInstance()->AddObject<MessageManager>();
+	m_MySceneObjects.emplace_back(m_Message);
+
+	// 会話参加者の指定（キャラID）
+	m_Message->SetParticipants("kumo", "miko");
+
+	// 会話素材の指定
+	m_Message->SetFramePath("assets/texture/Message/UI/MessageUI.png");
+
+	m_Message->SetBackgroundPath("assets/texture/Message/bg/background_003.jpg");
+
+	if (startMode == StageStartMode::StartTalk)
+	{
+		BuildStartPages();
+		m_Message->SetPages(m_Pages);
+		m_Message->Play();
+
+		m_Flow = Flow::StartTalk;
+
+		//BGM開始
+		Game::GetSound()->Play(SOUND_LABEL_BGM_CONVERSATION_006);
+	}
+	else // Gameplay開始
+	{
+		m_Flow = Flow::Gameplay;
+	}
+
+	//SoundFlg
+	m_Conversation_BGM_flg_1 = false;
+	m_Conversation_BGM_flg_2 = false;
+
+	// 背景
+	auto* bg = Game::GetInstance()->AddObject<TitleBG>();
+	m_MySceneObjects.emplace_back(bg);
+	bg->Texture2D::SetPosition(0.0f, 0.0f, 2.0f); // Z順序を最後に
+
+	// FIELD
+	m_Field = Game::GetInstance()->AddObject<Field>();
+	m_MySceneObjects.emplace_back(m_Field);
+
+	// silkWall*3
+	for (int i = 0; i < 3; ++i)
+	{
+		m_SilkWalls[i] = Game::GetInstance()->AddObject<silkWall>();
+		m_MySceneObjects.emplace_back(m_SilkWalls[i]);
+	}
+
+	// 左手（W / S ）
+	m_HandL = Game::GetInstance()->AddObject<playerHand>(0);
+	m_MySceneObjects.emplace_back(m_HandL);
+
+	// 右手（↑ / ↓ ）
+	m_HandR = Game::GetInstance()->AddObject<playerHand>(1);
+	m_MySceneObjects.emplace_back(m_HandR);
+
+	m_HandL->SetAnotherHand(m_HandR);
+	//m_HandL->SetField(m_Field);
+	m_HandR->SetAnotherHand(m_HandL);
+	//m_HandR->SetField(m_Field);
+
+	////巫女
+	m_Miko = Game::GetInstance()->AddObject<Shrinemaiden>();
+	m_MySceneObjects.emplace_back(m_Miko);
+	m_Miko->SetField(m_Field);
+
+	//経過したフレーム数と秒数を0にリセット
+	elapsedFrames = 0;
+	elapsedSeconds = 0;
+
+	// UI用の赤い糸表示
+	m_UI_redSilk = Game::GetInstance()->AddObject<UI_redSilk>();
+	m_MySceneObjects.emplace_back(m_UI_redSilk);
+	m_UI_redSilk->SetHands(m_HandL, m_HandR);
+
+	// UI用の赤い糸表示
+	m_UI_mikoHp = Game::GetInstance()->AddObject<UI_mikoHp>();
+	m_MySceneObjects.emplace_back(m_UI_mikoHp);
+	m_UI_mikoHp->SetMiko(m_Miko);
+	m_SilkCount = 0;
+
+	// UI 用の操作説明表示
+	m_UI_control = Game::GetInstance()->AddObject<UI_control>();
+	m_MySceneObjects.emplace_back(m_UI_control);
+
+	//敵が出現するフェーズのフラグをリセット
+	phase1Flag = false;
+	phase2Flag = false;
+	phase3Flag = false;
+	phase4Flag = false;
+	phase5Flag = false;
+	phase6Flag = false;
+	phase7Flag = false;
+	phase8Flag = false;
+	phase9Flag = false;
+	phase10Flag = false;
+	phase11Flag = false;
+
+	StagekillCount = 0;     //倒した敵の数をリセット
+	StageEnemyCount = 49;   //ステージの敵の総数を設定
+
+	ResultVoice_flg = false;
+
+	m_ClearFlg = false;
+	m_ClearImageFlg = false;
+	m_ClearChangeImageFlg = false;
+	m_GameOverFlg = false;
+	m_GameOverImageFlg = false;
+	m_ChangeClearCount = 60;
+
+	m_SelectIndex = 0;
+
+	m_GameUpdateBlock = false;
+}
+
+void Stage7::Uninit()
+{
+	if (m_Message)
+	{
+		m_Message->Stop();
+	}
+
+	m_Pages.clear();
+
+	if (m_Flow == Flow::Gameplay)
+	{
+		Game::GetSound()->Stop(SOUND_LABEL_BGM_STAGE_002);
+	}
+
+	Game::GetSound()->Stop(SOUND_LABEL_BGM_CONVERSATION_006);
+
+	// このシーンのオブジェクトを削除する
+	for (auto& o : m_MySceneObjects) {
+		Game::GetInstance()->DeleteObject(o);
+	}
+	m_MySceneObjects.clear();
+}
+
+void Stage7::Update()
+{
+	if (m_GameUpdateBlock != true)
+	{
+		GameUpdate();
+		UpdateEnemySpawn();
+		MessageUpdate();
+	}
+
+	SoundUpdate();
+	IssueUpdate();
+}
+
+void Stage7::MessageUpdate()
+{
+	if (!m_Message) return;
+
+	switch (m_Flow)
+	{
+	case Flow::StartTalk:
+		// 開始会話が終わったらゲーム開始へ
+		if (!m_Message->IsPlaying())
+		{
+			m_Flow = Flow::Gameplay;
+		}
+		break;
+
+	case Flow::Gameplay:
+		break;
+
+	case Flow::EndTalk:
+		break;
+	}
+}
+
+void Stage7::GameUpdate()
+{
+	if (m_Flow != Flow::Gameplay) return;
+
+	//m_MySceneObjects中の空間オブジェクトを削除する（erase）
+	for (auto it = m_MySceneObjects.begin(); it != m_MySceneObjects.end(); )
+	{
+		Object* o = *it; // オブジェクト取得
+		if (!o)
+		{
+			it = m_MySceneObjects.erase(it);
+			continue;
+		}
+
+		if (o->ToBeDeleted())
+		{
+			Game::GetInstance()->DeleteObject(o);   // ★実体も破棄依頼
+			it = m_MySceneObjects.erase(it);        // ★リストからも除去
+			continue;
+		}
+
+		++it;
+	}
+
+	//60フレーム経過するごとに1秒プラス
+	elapsedFrames++;
+	elapsedSeconds = elapsedFrames / 60;
+
+	//-----------------------------------------------------------------------------
+	// 操作／INPUT
+	//-----------------------------------------------------------------------------
+
+	float rt = Input::GetRightTrigger();
+	float lt = Input::GetLeftTrigger();
+	static bool prevLT = false;
+	static bool prevRT = false;
+	bool nowLT = (lt >= 0.5f);
+	bool nowRT = (rt >= 0.5f);
+	bool ltTriggerOnce = (nowLT && !prevLT);
+	bool rtTriggerOnce = (nowRT && !prevRT);
+	prevLT = nowLT;
+	prevRT = nowRT;
+
+	if (Input::GetKeyTrigger('D') || Input::GetButtonTrigger(XINPUT_LEFT_SHOULDER) || ltTriggerOnce)   // 
+	{
+		silkWall* w = nullptr;
+
+		// 1. まず、非アクティブ（消えている）スロットを探す
+		for (int i = 0; i < 3; ++i)
+		{
+			if (m_SilkWalls[i]->IsActive() == false)
+			{
+				w = m_SilkWalls[i];
+				break;
+			}
+		}
+
+		// 2. もし全部埋まっていたら、一番古いもの(m_NextSilkIndex)を上書きする
+		if (w == nullptr)
+		{
+			w = m_SilkWalls[m_NextSilkIndex];
+			m_NextSilkIndex = (m_NextSilkIndex + 1) % 3;
+		}
+
+		// 3. 発射実行
+		if (w && m_HandL && m_HandR)
+		{
+			w->Fire(m_HandL->GetPosition(), m_HandR->GetPosition());
+			w->SetUID(m_SilkCount++);
+		}
+	}
+
+	// 
+	if (Input::GetKeyTrigger('J') || Input::GetKeyTrigger(VK_LEFT) || Input::GetButtonTrigger(XINPUT_RIGHT_SHOULDER) || rtTriggerOnce)
+	{
+		silkWall* w = nullptr;
+
+		// 1. まず、非アクティブ（消えている）スロットを探す
+		for (int i = 0; i < 3; ++i)
+		{
+			if (!m_SilkWalls[i]->IsActive())
+			{
+				w = m_SilkWalls[i];
+				break;
+			}
+		}
+
+		// 2. もし全部埋まっていたら、一番古いもの(m_NextSilkIndex)を上書きする
+		if (w == nullptr)
+		{
+			w = m_SilkWalls[m_NextSilkIndex];
+			m_NextSilkIndex = (m_NextSilkIndex + 1) % 3;
+		}
+
+		// 3. 発射実行
+		if (w && m_HandL && m_HandR)
+		{
+			Vector3 startPos = m_HandR->GetPosition();  // 右手
+			Vector3 targetPos = m_HandL->GetPosition(); // 左手
+
+			w->Fire(startPos, targetPos);
+			w->SetUID(m_SilkCount++);
+		}
+	}
+
+	int count = 0;
+	int minIndex = -1;
+	int minUID = 0;
+	for (int i = 0; i < 3; ++i)
+	{
+		auto* w = m_SilkWalls[i];
+		if (!w) continue;
+		//if (m_SilkWalls[i]->IsActive() == false) continue;
+		if (w->IsActive())
+		{
+			++count;
+		}
+		w->SetOldOne(false);   // 先全部清掉
+		int uid = w->GetUID();
+		if (minIndex == -1 || uid < minUID)
+		{
+			minUID = uid;
+			minIndex = i;
+		}
+	}
+	//  3 以上ときOldOneを設定 
+	if (count > 2 && minIndex != -1)
+	{
+
+		m_SilkWalls[minIndex]->SetOldOne(true);
+	}
+
+	for (int i = 0; i < 3; ++i)
+	{
+		silkWall* wall = m_SilkWalls[i];
+		if (!wall) continue;              // 防禦性チェック
+	}
+
+	//-----------------------------------------------------------------------------
+	// silkWallの三角形判定
+	//-----------------------------------------------------------------------------
+	Vector3 A, B, C; // 三角形頂点
+
+	silkWall* walls[3] = { m_SilkWalls[0], m_SilkWalls[1], m_SilkWalls[2] };
+
+	// 3 本とも準備完了しているか？
+	const bool allReady = std::all_of(std::begin(walls), std::end(walls),
+		[](const silkWall* w) { return w && !w->IsGrowing(); });
+
+
+	if (allReady)
+	{
+		// 3 本の silkWall から三角形生成を試行
+		if (TriangleSilk::TryMakeTriangleFromWallsXY(walls[0], walls[1], walls[2], A, B, C))
+		{
+			int eliminatedCount = 0;
+			bool mikoMayuCount = false;
+
+			// 敵を調べる
+			//for (auto* obj : m_MySceneObjects)
+			//{
+			//	if (!obj) continue;
+			//	if (obj->ToBeDeleted()) continue;
+			//
+			//	auto* enemy = dynamic_cast<EnemyBase*>(obj);
+			//	if (!enemy) continue;
+			//
+			//	const auto pos = enemy->GetPosition();
+			//	if (TriangleSilk::IsInsideTriangleXY(pos, A, B, C))
+			//	{
+			//		Vector3 centroid = (A + B + C) / 3.0f;
+			//		enemy->StartMayuing(centroid);
+			//		++eliminatedCount;
+			//	}
+			//}
+			for (auto* enemy : Game::GetInstance()->GetObjects<EnemyBase>())
+			{
+				if (!enemy || enemy->ToBeDeleted()) continue;
+
+				const auto pos = enemy->GetPosition();
+				if (TriangleSilk::IsInsideTriangleXY(pos, A, B, C))
+				{
+					Vector3 centroid = (A + B + C) / 3.0f;
+					enemy->StartMayuing(centroid);
+					++eliminatedCount;
+				}
+			}
+
+			// 巫女も調べる
+			if (m_Miko)
+			{
+				const auto mikoPos = m_Miko->GetPosition();
+				if (TriangleSilk::IsInsideTriangleXY(mikoPos, A, B, C))
+				{
+					mikoMayuCount = true;
+				}
+			}
+
+			// Mayu を生成する
+			if (eliminatedCount > 0)
+			{
+				const float baseRadius = 25.0f;
+				const float perKill = 5.0f;
+				const float mayuRadius = baseRadius + perKill * static_cast<float>(eliminatedCount);
+
+				auto* mayu = Game::GetInstance()->AddObject<EnemyMayu>();
+				Vector3 centroid = (A + B + C) / 3.0f;
+				mayu->SetPosition(centroid);
+				mayu->SetRadius(mayuRadius);
+				m_MySceneObjects.emplace_back(mayu);
+			}
+
+			// 巫女が三角形に入ったときの処理
+			if (mikoMayuCount && m_Miko)
+			{
+				Vector3 centroid = (A + B + C) / 3.0f;
+				m_Miko->SetStartMayuing(centroid);
+			}
+
+			for (int i = 0; i < 3; ++i)
+			{
+				m_SilkWalls[i]->reInit();
+			}
+		}
+	}
+
+
+	//-----------------------------------------------------------------------------
+	// silkWall と　mayu の当たり判定
+	//-----------------------------------------------------------------------------
+
+	//MAYUのなかにいるから、こちはなにもしない
+
+	for (auto it = m_MySceneObjects.begin(); it != m_MySceneObjects.end(); )
+	{
+		Object* o = *it; // オブジェクト取得
+		if (!o || o->ToBeDeleted())
+		{
+			Game::GetInstance()->DeleteObject(o); // オブジェクト削除
+			it = m_MySceneObjects.erase(it); // イテレータを更新
+		}
+		else
+		{
+			++it; // 次へ
+		}
+	}
+
+	//ステージクリアと失敗のチェック
+	StageClearCheck();
+	StageFailedCheck();
+
+}
+
+void Stage7::SoundUpdate()
+{
+	if (m_Flow == Flow::Gameplay && m_Conversation_BGM_flg_1 == false)
+	{
+		m_Conversation_BGM_flg_1 = true;
+		Game::GetSound()->Stop(SOUND_LABEL_BGM_CONVERSATION_006);
+		Game::GetSound()->Play(SOUND_LABEL_BGM_STAGE_002);
+	}
+
+	if (m_Flow == Flow::EndTalk && m_Conversation_BGM_flg_2 == false)
+	{
+		m_Conversation_BGM_flg_2 = true;
+		Game::GetSound()->Stop(SOUND_LABEL_BGM_STAGE_002);
+		Game::GetSound()->Play(SOUND_LABEL_BGM_CONVERSATION_006);
+	}
+
+	//勝敗ボイス
+	if (m_ClearFlg == true && ResultVoice_flg == false)
+	{
+		ResultVoice_flg = true;
+		static std::mt19937 rng{ std::random_device{}() };
+		std::uniform_int_distribution<int> dist(1, 2);
+
+		int v = dist(rng);
+
+		if (v == 1)
+		{
+			Game::GetSound()->Play(SOUND_LABEL_VOICE_ANOTHER_000);
+		}
+		else if (v == 2)
+		{
+			Game::GetSound()->Play(SOUND_LABEL_VOICE_ANOTHER_001);
+		}
+	}
+	if (m_GameOverFlg == true && ResultVoice_flg == false)
+	{
+		ResultVoice_flg = true;
+		static std::mt19937 rng{ std::random_device{}() };
+		std::uniform_int_distribution<int> dist(1, 2);
+
+		int v = dist(rng);
+
+		if (v == 1)
+		{
+			Game::GetSound()->Play(SOUND_LABEL_VOICE_ANOTHER_005);
+		}
+		else if (v == 2)
+		{
+			Game::GetSound()->Play(SOUND_LABEL_VOICE_ANOTHER_006);
+		}
+	}
+}
+
+void Stage7::BuildStartPages()
+{
+	m_Pages.clear();
+
+	// Page0:
+	// 右=巫女,左=女郎蜘蛛
+	{
+		MessagePage p;
+
+		// ★必須：このページの表示（名前＋本文）
+		p.nameId = "none";//表示名(テキスト)
+		p.textId = "stage7_start";
+		p.textIndex = 0;//(stage1_start_000.png)
+
+		p.focus = FocusSide::None;
+
+		// ★Page0必須：左右の初期表情
+		p.leftFaceId = "normal";//蜘蛛初期表情
+		p.rightFaceId = "normal";//巫女初期表情
+		p.speakerFaceId = "";//フォーカスしている話者のみ表情を変更
+		//今ここに前と同じ表情を入れると立ち絵が表示されなくなるバグがあります
+		//表情を変更しないときは何も書かないように
+
+		// このページのボイス
+		//ボイスなし
+
+		m_Pages.push_back(p);
+		//（祠に向かいながら）
+	}
+	// Page1
+	{
+		MessagePage p;
+
+		p.nameId = "miko";
+		p.textId = "stage7_start";
+		p.textIndex = 1;
+
+		p.focus = FocusSide::Right;
+		p.speakerFaceId = "";
+
+		p.voiceLabel = SOUND_LABEL_VOICE_STAGE7_START_001;
+
+		m_Pages.push_back(p);
+		//…どうしてそんなに人や神様が嫌いなんですか？
+	}
+	// Page2
+	{
+		MessagePage p;
+
+		p.nameId = "miko";
+		p.textId = "stage7_start";
+		p.textIndex = 2;
+
+		p.focus = FocusSide::Right;
+		p.speakerFaceId = "";
+
+		p.voiceLabel = SOUND_LABEL_VOICE_STAGE7_START_002;
+
+		m_Pages.push_back(p);
+		//…というか、なんで行き先まで知って…
+	}
+	// Page3
+	{
+		MessagePage p;
+
+		p.nameId = "kumo";
+		p.textId = "stage7_start";
+		p.textIndex = 3;
+
+		p.focus = FocusSide::Left;
+		p.speakerFaceId = "";
+
+		p.voiceLabel = SOUND_LABEL_VOICE_STAGE7_START_003;
+
+		m_Pages.push_back(p);
+		//…それを貴様に喋って何になると？
+	}
+	// Page4
+	{
+		MessagePage p;
+
+		p.nameId = "miko";
+		p.textId = "stage7_start";
+		p.textIndex = 4;
+
+		p.focus = FocusSide::Right;
+		p.speakerFaceId = "";
+
+		p.voiceLabel = SOUND_LABEL_VOICE_STAGE7_START_004;
+
+		m_Pages.push_back(p);
+		//知りたいんです。なんで貴方が、そんなに恐れられてるのか。
+	}
+	// Page5
+	{
+		MessagePage p;
+
+		p.nameId = "miko";
+		p.textId = "stage7_start";
+		p.textIndex = 5;
+
+		p.focus = FocusSide::Right;
+		p.speakerFaceId = "sad";
+
+		p.voiceLabel = SOUND_LABEL_VOICE_STAGE7_START_005;
+
+		m_Pages.push_back(p);
+		//…心底悪い人だとは…思えないので
+	}
+	// Page6
+	{
+		MessagePage p;
+
+		p.nameId = "kumo";
+		p.textId = "stage7_start";
+		p.textIndex = 6;
+
+		p.focus = FocusSide::Left;
+		p.speakerFaceId = "";
+
+		//ボイスなし
+
+		m_Pages.push_back(p);
+		//………
+	}
+	// Page7
+	{
+		MessagePage p;
+
+		p.nameId = "kumo";
+		p.textId = "stage7_start";
+		p.textIndex = 7;
+
+		p.focus = FocusSide::Left;
+		p.speakerFaceId = "";
+
+		p.voiceLabel = SOUND_LABEL_VOICE_STAGE7_START_007;
+
+		m_Pages.push_back(p);
+		//…妖怪も嫌いだ
+	}
+	// Page8
+	{
+		MessagePage p;
+
+		p.nameId = "miko";
+		p.textId = "stage7_start";
+		p.textIndex = 8;
+
+		p.focus = FocusSide::Right;
+		p.speakerFaceId = "normal";
+
+		p.voiceLabel = SOUND_LABEL_VOICE_STAGE7_START_008;
+
+		m_Pages.push_back(p);
+		//…え？
+	}
+	// Page9
+	{
+		MessagePage p;
+
+		p.nameId = "kumo";
+		p.textId = "stage7_start";
+		p.textIndex = 9;
+
+		p.focus = FocusSide::Left;
+		p.speakerFaceId = "";
+
+		p.voiceLabel = SOUND_LABEL_VOICE_STAGE7_START_009;
+
+		m_Pages.push_back(p);
+		//私はそもそも妖怪だ。妖怪の中でも、特に力を持って生まれた。故に早くして皆を統率していた。
+	}
+	// Page10
+	{
+		MessagePage p;
+
+		p.nameId = "kumo";
+		p.textId = "stage7_start";
+		p.textIndex = 10;
+
+		p.focus = FocusSide::Left;
+		p.speakerFaceId = "";
+
+		p.voiceLabel = SOUND_LABEL_VOICE_STAGE7_START_010;
+
+		m_Pages.push_back(p);
+		//奴等の見た目は、当然封印された時から変わっていない。
+	}
+	// Page11
+	{
+		MessagePage p;
+
+		p.nameId = "kumo";
+		p.textId = "stage7_start";
+		p.textIndex = 11;
+
+		p.focus = FocusSide::Left;
+		p.speakerFaceId = "";
+
+		p.voiceLabel = SOUND_LABEL_VOICE_STAGE7_START_011;
+
+		m_Pages.push_back(p);
+		//妖怪達は異形だと、力を持った危険な種族だと言われ、差別を受け端へ端へと追いやられた
+	}
+	// Page12
+	{
+		MessagePage p;
+
+		p.nameId = "kumo";
+		p.textId = "stage7_start";
+		p.textIndex = 12;
+
+		p.focus = FocusSide::Left;
+		p.speakerFaceId = "";
+
+		p.voiceLabel = SOUND_LABEL_VOICE_STAGE7_START_012;
+
+		m_Pages.push_back(p);
+		//私とて、人間とは共存したかった。だが、このまま受け入れてしまえば我々の居場所はない
+	}
+	// Page13
+	{
+		MessagePage p;
+
+		p.nameId = "miko";
+		p.textId = "stage7_start";
+		p.textIndex = 13;
+
+		p.focus = FocusSide::Right;
+		p.speakerFaceId = "sad";
+
+		//ボイスなし
+
+		m_Pages.push_back(p);
+		//…
+	}
+	// Page14
+	{
+		MessagePage p;
+
+		p.nameId = "kumo";
+		p.textId = "stage7_start";
+		p.textIndex = 14;
+
+		p.focus = FocusSide::Left;
+		p.speakerFaceId = "";
+
+		p.voiceLabel = SOUND_LABEL_VOICE_STAGE7_START_014;
+
+		m_Pages.push_back(p);
+		//故に我々は戦った。どちら側にも死者を出さずに、押し返せていた。
+	}
+	// Page15
+	{
+		MessagePage p;
+
+		p.nameId = "kumo";
+		p.textId = "stage7_start";
+		p.textIndex = 15;
+
+		p.focus = FocusSide::Left;
+		p.speakerFaceId = "";
+
+		p.voiceLabel = SOUND_LABEL_VOICE_STAGE7_START_015;
+
+		m_Pages.push_back(p);
+		//このまま行けば、共存の未来が手に入る。理想は手に届く場所にあった。
+	}
+	// Page16
+	{
+		MessagePage p;
+
+		p.nameId = "kumo";
+		p.textId = "stage7_start";
+		p.textIndex = 16;
+
+		p.focus = FocusSide::Left;
+		p.speakerFaceId = "";
+
+		p.voiceLabel = SOUND_LABEL_VOICE_STAGE7_START_016;
+
+		m_Pages.push_back(p);
+		//…だが…
+	}
+	// Page17
+	{
+		MessagePage p;
+
+		p.nameId = "kumo";
+		p.textId = "stage7_start";
+		p.textIndex = 17;
+
+		p.focus = FocusSide::Left;
+		p.speakerFaceId = "";
+
+		p.voiceLabel = SOUND_LABEL_VOICE_STAGE7_START_017;
+
+		m_Pages.push_back(p);
+		//お前たちの祀る神とやらが、それを許しはしなかった。
+	}
+	// Page18
+	{
+		MessagePage p;
+
+		p.nameId = "kumo";
+		p.textId = "stage7_start";
+		p.textIndex = 18;
+
+		p.focus = FocusSide::Left;
+		p.speakerFaceId = "";
+
+		p.voiceLabel = SOUND_LABEL_VOICE_STAGE7_START_018;
+
+		m_Pages.push_back(p);
+		//…奴は人間の味方だった。奴の放った光は、我々を攻撃した。
+	}
+	// Page19
+	{
+		MessagePage p;
+
+		p.nameId = "kumo";
+		p.textId = "stage7_start";
+		p.textIndex = 19;
+
+		p.focus = FocusSide::Left;
+		p.speakerFaceId = "";
+
+		p.voiceLabel = SOUND_LABEL_VOICE_STAGE7_START_019;
+
+		m_Pages.push_back(p);
+		//そこから全てが覆った。こちら側は防戦一方、笑われながら嬲り殺される奴も沢山いた。
+	}
+	// Page20
+	{
+		MessagePage p;
+
+		p.nameId = "kumo";
+		p.textId = "stage7_start";
+		p.textIndex = 20;
+
+		p.focus = FocusSide::Left;
+		p.speakerFaceId = "";
+
+		p.voiceLabel = SOUND_LABEL_VOICE_STAGE7_START_020;
+
+		m_Pages.push_back(p);
+		//抵抗した者は皆私以外殺された。残った者は人間側に寝返り…私を差し出した。
+	}
+	// Page21
+	{
+		MessagePage p;
+
+		p.nameId = "kumo";
+		p.textId = "stage7_start";
+		p.textIndex = 21;
+
+		p.focus = FocusSide::Left;
+		p.speakerFaceId = "";
+
+		p.voiceLabel = SOUND_LABEL_VOICE_STAGE7_START_021;
+
+		m_Pages.push_back(p);
+		//神は人間に一冊の本を渡し、その本を使い私を封印した。
+	}
+	// Page22
+	{
+		MessagePage p;
+
+		p.nameId = "kumo";
+		p.textId = "stage7_start";
+		p.textIndex = 22;
+
+		p.focus = FocusSide::Left;
+		p.speakerFaceId = "";
+
+		p.voiceLabel = SOUND_LABEL_VOICE_STAGE7_START_022;
+
+		m_Pages.push_back(p);
+		//それが…800年に一度だけ使えると言われる、貴様の持つ「大封印の書」だ。
+	}
+	// Page23
+	{
+		MessagePage p;
+
+		p.nameId = "miko";
+		p.textId = "stage7_start";
+		p.textIndex = 23;
+
+		p.focus = FocusSide::Right;
+		p.speakerFaceId = "surprised";
+
+		p.voiceLabel = SOUND_LABEL_VOICE_STAGE7_START_023;
+
+		m_Pages.push_back(p);
+		//…！
+	}
+	// Page24
+	{
+		MessagePage p;
+
+		p.nameId = "kumo";
+		p.textId = "stage7_start";
+		p.textIndex = 24;
+
+		p.focus = FocusSide::Left;
+		p.speakerFaceId = "glare";
+
+		p.voiceLabel = SOUND_LABEL_VOICE_STAGE7_START_024;
+
+		m_Pages.push_back(p);
+		//人間に蔑まれ、神にも仲間を殺され、妖怪達にも裏切られ…私は…この世の全てが心底嫌いだ
+	}
+	// Page25
+	{
+		MessagePage p;
+
+		p.nameId = "miko";
+		p.textId = "stage7_start";
+		p.textIndex = 25;
+
+		p.focus = FocusSide::Right;
+		p.speakerFaceId = "sad";
+
+		p.voiceLabel = SOUND_LABEL_VOICE_STAGE7_START_025;
+
+		m_Pages.push_back(p);
+		//…そんなこと…なんでもっと早く言わなーー
+	}
+	// Page26
+	{
+		MessagePage p;
+
+		p.nameId = "kumo";
+		p.textId = "stage7_start";
+		p.textIndex = 26;
+
+		p.focus = FocusSide::Left;
+		p.speakerFaceId = "normal";
+
+		p.voiceLabel = SOUND_LABEL_VOICE_STAGE7_START_026;
+
+		m_Pages.push_back(p);
+		//「分かってあげられたのに」…などとぬかすつもりか？
+	}
+	// Page27
+	{
+		MessagePage p;
+
+		p.nameId = "miko";
+		p.textId = "stage7_start";
+		p.textIndex = 27;
+
+		p.focus = FocusSide::Right;
+		p.speakerFaceId = "";
+
+		p.voiceLabel = SOUND_LABEL_VOICE_STAGE7_START_027;
+
+		m_Pages.push_back(p);
+		//…だって…だってそんなひどい話…
+	}
+	// Page28
+	{
+		MessagePage p;
+
+		p.nameId = "miko";
+		p.textId = "stage7_start";
+		p.textIndex = 28;
+
+		p.focus = FocusSide::Right;
+		p.speakerFaceId = "";
+
+		p.voiceLabel = SOUND_LABEL_VOICE_STAGE7_START_028;
+
+		m_Pages.push_back(p);
+		//人間に付いた妖怪たちも結局皆祠に…なんで…どうして…？
+	}
+	// Page29
+	{
+		MessagePage p;
+
+		p.nameId = "kumo";
+		p.textId = "stage7_start";
+		p.textIndex = 29;
+
+		p.focus = FocusSide::Left;
+		p.speakerFaceId = "";
+
+		p.voiceLabel = SOUND_LABEL_VOICE_STAGE7_START_029;
+
+		m_Pages.push_back(p);
+		//…やはり甘いな、貴様は
+	}
+	// Page30
+	{
+		MessagePage p;
+
+		p.nameId = "kumo";
+		p.textId = "stage7_start";
+		p.textIndex = 30;
+
+		p.focus = FocusSide::Left;
+		p.speakerFaceId = "";
+
+		p.voiceLabel = SOUND_LABEL_VOICE_STAGE7_START_030;
+
+		m_Pages.push_back(p);
+		//…(皆がお前のような人間なら、私もこうはならなかったのだろうか)
+	}
+}
+
+void Stage7::BuildEndPages()
+{
+	m_Pages.clear();
+
+	// Page0
+	// 右=巫女,左=女郎蜘蛛
+	{
+		MessagePage p;
+
+		// ★必須：このページの表示（名前＋本文）
+		p.nameId = "miko";        // name_miko.png
+		p.textId = "stage7_end";  // text_stage1_end_***
+		p.textIndex = 0;          // 000
+
+		p.focus = FocusSide::Right;
+
+		// Page0必須：左右の初期表情
+		p.leftFaceId = "normal";
+		p.rightFaceId = "normal";
+		p.speakerFaceId = "";
+
+		// このページのボイス
+		p.voiceLabel = SOUND_LABEL_VOICE_STAGE7_END_000;
+
+		m_Pages.push_back(p);
+		//…もう、誰とも仲良くするつもりはないんですか？
+	}
+	// Page1
+	{
+		MessagePage p;
+
+		p.nameId = "kumo";
+		p.textId = "stage7_end";
+		p.textIndex = 1;
+
+		p.focus = FocusSide::Left;
+		p.speakerFaceId = "";
+
+		p.voiceLabel = SOUND_LABEL_VOICE_STAGE7_END_001;
+
+		m_Pages.push_back(p);
+		//…助けてやった村の人間は礼の一つも言わなかったようだが？
+	}
+	// Page2
+	{
+		MessagePage p;
+
+		p.nameId = "kumo";
+		p.textId = "stage7_end";
+		p.textIndex = 2;
+
+		p.focus = FocusSide::Left;
+		p.speakerFaceId = "";
+
+		p.voiceLabel = SOUND_LABEL_VOICE_STAGE7_END_002;
+
+		m_Pages.push_back(p);
+		//…くだらん話を喋り過ぎたな、さっさと行こう
+	}
+	// Page3
+	{
+		MessagePage p;
+
+		p.nameId = "miko";
+		p.textId = "stage7_end";
+		p.textIndex = 3;
+
+		p.focus = FocusSide::Right;
+		p.speakerFaceId = "";
+
+		//ボイスなし
+
+		m_Pages.push_back(p);
+		//…
+	}
+}
+
+void Stage7::UpdateEnemySpawn()
+{
+	if (elapsedSeconds == 5 && phase1Flag == false)
+	{
+		EnemySpawn(NORMAL, Vector3(100.0f, 350.0f, 0.0f));
+		EnemySpawn(NORMAL, Vector3(0.0f, 400.0f, 0.0f));
+		EnemySpawn(NORMAL, Vector3(-100.0f, 350.0f, 0.0f));
+		phase1Flag = true;
+	}
+
+	if (elapsedSeconds == 9 && phase2Flag == false)
+	{
+		EnemySpawn(NORMAL, Vector3(400.0f, 50.0f, 0.0f));
+		EnemySpawn(NORMAL, Vector3(400.0f, -50.0f, 0.0f));
+		EnemySpawn(NORMAL, Vector3(350.0f, 150.0f, 0.0f));
+		EnemySpawn(NORMAL, Vector3(350.0f, -150.0f, 0.0f));
+		EnemySpawn(NORMAL, Vector3(-350.0f, 150.0f, 0.0f));
+		EnemySpawn(NORMAL, Vector3(-350.0f, -150.0f, 0.0f));
+		EnemySpawn(NORMAL, Vector3(-400.0f, 50.0f, 0.0f));
+		EnemySpawn(NORMAL, Vector3(-400.0f, -50.0f, 0.0f));
+		phase2Flag = true;
+	}
+
+	if (elapsedSeconds == 15 && phase3Flag == false)
+	{
+		EnemySpawn(TACKLE, Vector3(0.0f, 400.0f, 0.0f));
+		phase3Flag = true;
+	}
+
+	if (elapsedSeconds == 19 && phase4Flag == false)
+	{
+		EnemySpawn(NORMAL, Vector3(200.0f, -200.0f, 0.0f));
+		EnemySpawn(NORMAL, Vector3(100.0f, -250.0f, 0.0f));
+		EnemySpawn(NORMAL, Vector3(0.0f, -250.0f, 0.0f));
+		EnemySpawn(NORMAL, Vector3(-100.0f, -250.0f, 0.0f));
+		EnemySpawn(NORMAL, Vector3(-200.0f, -200.0f, 0.0f));
+		phase4Flag = true;
+	}
+
+	if (elapsedSeconds == 27 && phase5Flag == false)
+	{
+		EnemySpawn(NORMAL, Vector3(350.0f, -200.0f, 0.0f));
+		EnemySpawn(NORMAL, Vector3(300.0f, -250.0f, 0.0f));
+		EnemySpawn(NORMAL, Vector3(-100.0f, 350.0f, 0.0f));
+		EnemySpawn(NORMAL, Vector3(-200.0f, 300.0f, 0.0f));
+		EnemySpawn(NORMAL, Vector3(-300.0f, 150.0f, 0.0f));
+		EnemySpawn(NORMAL, Vector3(-400.0f, 0.0f, 0.0f));
+		phase5Flag = true;
+	}
+
+	if (elapsedSeconds == 33 && phase6Flag == false)
+	{
+		EnemySpawn(TACKLE, Vector3(200.0f, 300.0f, 0.0f));
+		EnemySpawn(TACKLE, Vector3(-200.0f, -300.0f, 0.0f));
+		phase6Flag = true;
+	}
+
+	if (elapsedSeconds == 39 && phase7Flag == false)
+	{
+		EnemySpawn(NORMAL, Vector3(200.0f, -320.0f, 0.0f));
+		EnemySpawn(NORMAL, Vector3(125.0f, -360.0f, 0.0f));
+		EnemySpawn(NORMAL, Vector3(50.0f, -400.0f, 0.0f));
+		EnemySpawn(NORMAL, Vector3(-50.0f, -400.0f, 0.0f));
+		EnemySpawn(NORMAL, Vector3(-125.0f, -360.0f, 0.0f));
+		EnemySpawn(NORMAL, Vector3(-200.0f, -320.0f, 0.0f));
+		phase7Flag = true;
+	}
+
+	if (elapsedSeconds == 43 && phase8Flag == false)
+	{
+		EnemySpawn(NORMAL, Vector3(100.0f, 350.0f, 0.0f));
+		EnemySpawn(NORMAL, Vector3(0.0f, 400.0f, 0.0f));
+		EnemySpawn(NORMAL, Vector3(-100.0f, 350.0f, 0.0f));
+		phase8Flag = true;
+	}
+
+	if (elapsedSeconds == 50 && phase9Flag == false)
+	{
+		EnemySpawn(NORMAL, Vector3(50.0f, 380.0f, 0.0f));
+		EnemySpawn(NORMAL, Vector3(0.0f, 400.0f, 0.0f));
+		EnemySpawn(NORMAL, Vector3(-50.0f, 380.0f, 0.0f));
+		EnemySpawn(NORMAL, Vector3(-370.0f, 50.0f, 0.0f));
+		EnemySpawn(NORMAL, Vector3(-370.0f, -50.0f, 0.0f));
+		EnemySpawn(NORMAL, Vector3(-400.0f, 0.0f, 0.0f));
+		phase9Flag = true;
+	}
+
+	if (elapsedSeconds == 55 && phase10Flag == false)
+	{
+		EnemySpawn(TACKLE, Vector3(380.0f, -50.0f, 0.0f));
+		EnemySpawn(TACKLE, Vector3(150.0f, -300.0f, 0.0f));
+		phase10Flag = true;
+	}
+
+	if (elapsedSeconds == 62 && phase11Flag == false)
+	{
+		EnemySpawn(TACKLE, Vector3(200.0f, 350.0f, 0.0f));
+		EnemySpawn(NORMAL, Vector3(200.0f, -320.0f, 0.0f));
+		EnemySpawn(NORMAL, Vector3(100.0f, -360.0f, 0.0f));
+		EnemySpawn(NORMAL, Vector3(0.0f, -400.0f, 0.0f));
+		EnemySpawn(NORMAL, Vector3(-100.0f, -360.0f, 0.0f));
+		EnemySpawn(NORMAL, Vector3(-200.0f, -320.0f, 0.0f));
+		EnemySpawn(TACKLE, Vector3(-200.0f, 350.0f, 0.0f));
+		phase11Flag = true;
+	}	
+}
+
+void Stage7::StageClearCheck()
+{
+	//敵を全て倒したかどうか
+	if (StagekillCount >= StageEnemyCount)
+	{
+		m_ChangeClearCount--;
+	}
+	if (m_ChangeClearCount <= 0 && m_ClearFlg == false)
+	{
+		m_ClearFlg = true;
+	}
+
+	Game::GetInstance()->SetMaxClearedStage(7);
+
+}
+
+void Stage7::StageFailedCheck()
+{
+	if (m_Miko->GetDYINGTimer() <= 0)
+	{
+		m_GameOverFlg = true;
+	}
+}
+
+void Stage7::IssueUpdate()
+{
+	if (m_GameOverFlg == true)
+	{
+		m_GameUpdateBlock = true;
+		Game::GetInstance()->SetWorldStopped(true);
+		// 初回だけ画像生成
+		if (m_GameOverImageFlg == false)
+		{
+			//敗北
+			GameOverImage[0] = Game::GetInstance()->AddObject<Texture2D>();
+			GameOverImage[0]->SetTexture("assets/texture/lose000.png");
+			GameOverImage[0]->SetPosition(0.0f, 0.0f, 0.0f);
+			GameOverImage[0]->SetScale(1920.0f, 1080.0f, 0.0f);
+			GameOverImage[0]->SetDrawOrder(10000);
+			m_MySceneObjects.emplace_back(GameOverImage[0]);
+
+			//もう一度遊ぶ
+			GameOverImage[1] = Game::GetInstance()->AddObject<Texture2D>();
+			GameOverImage[1]->SetTexture("assets/texture/lose001.png");
+			GameOverImage[1]->SetPosition(0.0f, 0.0f, 0.0f);
+			GameOverImage[1]->SetScale(2048.0f, 1152.0f, 0.0f);
+			GameOverImage[1]->SetDrawOrder(10000);
+			m_MySceneObjects.emplace_back(GameOverImage[1]);
+
+			//ステージセレクトへ
+			GameOverImage[2] = Game::GetInstance()->AddObject<Texture2D>();
+			GameOverImage[2]->SetTexture("assets/texture/lose002.png");
+			GameOverImage[2]->SetPosition(0.0f, 0.0f, 0.0f);
+			GameOverImage[2]->SetScale(1280.0f, 720.0f, 0.0f);
+			GameOverImage[2]->SetDrawOrder(10000);
+			m_MySceneObjects.emplace_back(GameOverImage[2]);
+
+			m_SelectIndex = 0;
+			m_GameOverImageFlg = true;
+		}
+
+		// スティックで選択
+		{
+			DirectX::XMFLOAT2 stick = Input::GetLeftAnalogStick();
+			static bool stickFree_GameOver = true;
+
+			bool leftKey = Input::GetKeyTrigger(VK_A);
+			bool rightKey = Input::GetKeyTrigger(VK_D);
+
+			if (stickFree_GameOver)
+			{
+				if (leftKey || rightKey)
+				{
+					m_SelectIndex = (m_SelectIndex + 1) % 2; // 0 <-> 1
+					stickFree_GameOver = false;
+				}
+				if (stick.x < -0.5f)
+				{
+					m_SelectIndex = (m_SelectIndex + 1) % 2; // 0<->1
+					stickFree_GameOver = false;
+				}
+				else if (stick.x > 0.5f)
+				{
+					m_SelectIndex = (m_SelectIndex + 1) % 2; // 0<->1
+					stickFree_GameOver = false;
+				}
+			}
+			if (fabsf(stick.x) < 0.2f) stickFree_GameOver = true;
+		}
+
+		// 見た目反映
+		//選択してる方を大きく、選択していないほうを小さく
+		if (m_SelectIndex == 0)
+		{
+			GameOverImage[1]->SetScale(2048.0f, 1152.0f, 0.0f);
+			GameOverImage[2]->SetScale(1280.0f, 720.0f, 0.0f);
+		}
+		else
+		{
+			GameOverImage[1]->SetScale(1280.0f, 720.0f, 0.0f);
+			GameOverImage[2]->SetScale(2048.0f, 1152.0f, 0.0f);
+		}
+
+		// 決定
+		if (Input::GetKeyTrigger(VK_SPACE) || Input::GetButtonTrigger(XINPUT_A))
+		{
+			//もう一度プレイ
+			if (m_SelectIndex == 0)
+			{
+				RePlay();
+				return;
+			}
+			else
+			{
+				//ステージセレクトへ
+				Game::GetInstance()->ChangeScene(SceneName::STAGE_SELECT);
+				return;
+			}
+		}
+		return;
+	}
+
+	if (m_ClearFlg == true)
+	{
+		Game::GetInstance()->SetStageClearFlag(7);
+		m_GameUpdateBlock = true;
+		Game::GetInstance()->SetWorldStopped(true);
+		if (m_ClearImageFlg == false)
+		{
+			//勝利
+			ClearImage[0] = Game::GetInstance()->AddObject<Texture2D>();
+			ClearImage[0]->SetTexture("assets/texture/win.png");
+			ClearImage[0]->SetPosition(0.0f, 0.0f, 0.0f);
+			ClearImage[0]->SetScale(1920.0f, 1080.0f, 0.0f);
+			ClearImage[0]->SetDrawOrder(10000);
+			m_MySceneObjects.emplace_back(ClearImage[0]);
+
+			m_ClearImageFlg = true;
+		}
+
+		if (Input::GetKeyTrigger(VK_SPACE) || Input::GetButtonTrigger(XINPUT_A))
+		{
+			ClearImage[0]->SetScale(0.0f, 0.0f, 0.0f);
+
+			//終了会話スタート
+			BuildEndPages();
+			m_Message->SetPages(m_Pages);
+			m_Message->Play();
+			m_Flow = Flow::EndTalk;
+
+			m_ClearFlg = false; // クリア演出終了
+		}
+		return;
+	}
+	if (m_Flow == Flow::EndTalk)
+	{
+		if (!m_Message->IsPlaying())
+		{
+			// 初回だけ画像生成
+			if (m_ClearChangeImageFlg == false)
+			{
+				m_ClearChangeImageFlg = true;
+
+				//次のステージへ
+				ClearImage[1] = Game::GetInstance()->AddObject<Texture2D>();
+				ClearImage[1]->SetTexture("assets/texture/win002.png");
+				ClearImage[1]->SetPosition(0.0f, 0.0f, 0.0f);
+				ClearImage[1]->SetScale(2048.0f, 1152.0f, 0.0f);
+				ClearImage[1]->SetDrawOrder(10000);
+				m_MySceneObjects.emplace_back(ClearImage[1]);
+
+				//セレクトへ
+				ClearImage[2] = Game::GetInstance()->AddObject<Texture2D>();
+				ClearImage[2]->SetTexture("assets/texture/lose002.png");
+				ClearImage[2]->SetPosition(0.0f, 0.0f, 0.0f);
+				ClearImage[2]->SetScale(1280.0f, 720.0f, 0.0f);
+				ClearImage[2]->SetDrawOrder(10000);
+				m_MySceneObjects.emplace_back(ClearImage[2]);
+
+				m_SelectIndex = 0;
+			}
+
+			// スティックで選択
+			{
+				DirectX::XMFLOAT2 stick = Input::GetLeftAnalogStick();
+				static bool stickFree_ClearResult = true;
+
+				bool leftKey = Input::GetKeyTrigger(VK_A);
+				bool rightKey = Input::GetKeyTrigger(VK_D);
+
+				if (stickFree_ClearResult)
+				{
+					if (leftKey || rightKey)
+					{
+						m_SelectIndex = (m_SelectIndex + 1) % 2; // 0 <-> 1
+						stickFree_ClearResult = false;
+					}
+					if (stick.x < -0.5f)
+					{
+						m_SelectIndex = (m_SelectIndex + 1) % 2; // 0<->1
+						stickFree_ClearResult = false;
+					}
+					else if (stick.x > 0.5f)
+					{
+						m_SelectIndex = (m_SelectIndex + 1) % 2; // 0<->1
+						stickFree_ClearResult = false;
+					}
+				}
+				if (fabsf(stick.x) < 0.2f) stickFree_ClearResult = true;
+			}
+
+			// 見た目反映
+			if (m_SelectIndex == 0)
+			{
+				//次のステージへ
+				ClearImage[1]->SetScale(2048.0f, 1152.0f, 0.0f);
+				ClearImage[2]->SetScale(1280.0f, 720.0f, 0.0f);
+			}
+			else
+			{
+				//セレクトへ
+				ClearImage[1]->SetScale(1280.0f, 720.0f, 0.0f);
+				ClearImage[2]->SetScale(2048.0f, 1152.0f, 0.0f);
+			}
+
+			// 決定
+			if (Input::GetKeyTrigger(VK_SPACE) || Input::GetButtonTrigger(XINPUT_A))
+			{
+				if (m_SelectIndex == 0)
+				{
+					//次のステージへ
+					Game::GetInstance()->ChangeScene(SceneName::STAGE8);
+					return;
+				}
+				else
+				{
+					//セレクトへ
+					Game::GetInstance()->ChangeScene(SceneName::STAGE_SELECT);
+					return;
+				}
+			}
+		}
+	}
+}
+
+void Stage7::RePlay()
+{
+	// 画面消す
+	GameOverImage[0]->SetScale(0.0f, 0.0f, 0.0f);
+	GameOverImage[1]->SetScale(0.0f, 0.0f, 0.0f);
+	GameOverImage[2]->SetScale(0.0f, 0.0f, 0.0f);
+
+	// 次回のStage1はGameplay開始にする
+	Game::GetInstance()->SetNextStageStartMode(7, StageStartMode::Gameplay);
+
+	// ステージを作り直す（安全）
+	Game::GetInstance()->ChangeScene(SceneName::STAGE7);
+	return;
+}
